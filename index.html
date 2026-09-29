@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Whisper Manor — Voice Murder Mystery</title>
+<style>
+:root{--bg:#141018;--panel:#1f1826;--accent:#e8b04b;--text:#efe8dc;--dim:#9a8fa8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:Georgia,serif;min-height:100vh;display:flex;flex-direction:column}
+header{padding:14px 20px;background:var(--panel);display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--accent)}
+h1{font-size:1.3rem;color:var(--accent)}
+#keybox{font-size:.8rem;color:var(--dim)}
+#keybox input{background:#0d0a12;border:1px solid var(--dim);color:var(--text);padding:4px 8px;border-radius:4px;width:220px}
+main{flex:1;display:flex;max-width:1100px;width:100%;margin:0 auto;gap:12px;padding:12px}
+#left{flex:2;display:flex;flex-direction:column;gap:10px}
+#right{flex:1;display:flex;flex-direction:column;gap:10px}
+.panel{background:var(--panel);border-radius:10px;padding:12px}
+#suspects{display:flex;gap:8px;flex-wrap:wrap}
+.suspect{padding:8px 12px;border:1px solid var(--dim);border-radius:8px;cursor:pointer;background:#171221}
+.suspect.active{border-color:var(--accent);color:var(--accent)}
+.suspect.accused{border-color:#c33;color:#c33;text-decoration:line-through}
+#chat{flex:1;min-height:300px;max-height:55vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.msg{padding:8px 12px;border-radius:10px;max-width:85%;line-height:1.45}
+.msg.suspect{background:#2a2138;align-self:flex-start}
+.msg.player{background:#3a3220;align-self:flex-end}
+.msg small{color:var(--dim);display:block;font-size:.7rem}
+#inputrow{display:flex;gap:8px}
+#q{flex:1;background:#0d0a12;border:1px solid var(--dim);color:var(--text);padding:10px;border-radius:8px;font-size:1rem}
+button{background:var(--accent);color:#141018;border:0;padding:10px 16px;border-radius:8px;font-weight:bold;cursor:pointer;font-family:inherit}
+button:disabled{opacity:.4}
+#mic.on{background:#c33;color:#fff;animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.6}}
+#notebook{max-height:34vh;overflow-y:auto;font-size:.85rem}
+.claim{margin-bottom:8px;padding-bottom:8px;border-bottom:1px dashed #3a3048}
+.claim b{color:var(--accent)}
+#status{font-size:.8rem;color:var(--dim);min-height:1.2em}
+#newcase{margin-top:6px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center}
+.modal .inner{background:var(--panel);padding:24px;border-radius:12px;max-width:420px;text-align:center;border:2px solid var(--accent)}
+.hidden{display:none}
+audio{width:100%;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🕵️ Whisper Manor</h1>
+  <div id="keybox">Pollen key: <input id="apikey" type="password" placeholder="sk-... (your Pollen key)">
+  <a href="https://github.com/pollinations/pollinations/blob/main/BRING_YOUR_OWN_POLLEN.md" target="_blank" style="color:var(--accent);font-size:.75rem">get yours ↗</a></div>
+</header>
+<main>
+  <div id="left">
+    <div class="panel">
+      <div id="suspects"></div>
+      <button id="newcase">🔄 New case</button>
+    </div>
+    <div class="panel" id="chatwrap" style="flex:1;display:flex;flex-direction:column">
+      <div id="chat"></div>
+      <div id="inputrow">
+        <button id="mic" title="Hold conversation with your voice">🎤 Speak</button>
+        <input id="q" placeholder="Ask a question...">
+        <button id="ask">Ask</button>
+        <button id="accuse" title="Accuse this suspect">⚖️ Accuse</button>
+      </div>
+      <div id="status"></div>
+    </div>
+  </div>
+  <div id="right">
+    <div class="panel"><h3>📓 Detective notebook</h3><div id="notebook"></div></div>
+  </div>
+</main>
+<div id="verdict" class="modal hidden"><div class="inner"><h2 id="v-title"></h2><p id="v-text"></p><button onclick="document.getElementById('verdict').classList.add('hidden')">Close</button></div></div>
+<script>
+const API="https://gen.pollinations.ai/v1/chat/completions";
+const VOICES=["alloy","echo","fable","onyx","nova","shimmer"];
+const HUES=[270,140,20,200,330];
+let state={suspects:[],active:0,culprit:-1,secret:"",solved:false,history:{}};
+const $=id=>document.getElementById(id);
+$("apikey").value=localStorage.getItem("pollen_key")||"";
+$("apikey").onchange=e=>localStorage.setItem("pollen_key",e.target.value);
+const key=()=>$("apikey").value.trim();
+async function call(messages,json){
+  const r=await fetch(API,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key()},
+    body:JSON.stringify({model:"openai",messages,...(json?{response_format:{type:"json_object"}}:{})})});
+  const d=await r.json();
+  if(!r.ok)throw new Error(d.error?.message||r.status);
+  return d.choices[0].message.content;
+}
+async function newCase(){
+  if(!key())return alert("Enter your Pollen key first (top right).");
+  $("status").textContent="Writing a new case…";
+  try{
+    const t=await call([{role:"system",content:'Generate a murder mystery case as JSON: {"location":string, "victim":string, "secret":string (the full truth of who killed the victim, how, why, 2-3 sentences), "suspects":[{"name":string,"persona":string (1-2 sentences of personality and manner of speech),"isCulprit":boolean,"alibi":string,"guiltyKnowledge":string}]} Exactly 4 suspects, exactly one isCulprit=true. Victims, weapons and motives should be creative (not cliché butler). Respond ONLY with JSON.'}],true);
+    const c=JSON.parse(t);
+    state={suspects:c.suspects,active:0,culprit:c.suspects.findIndex(s=>s.isCulprit),secret:c.secret+" Location: "+c.location+". Victim: "+c.victim+".",solved:false,history:{}};
+    render();
+    addMsg("host","A body has been found"+(c.victim?": "+c.victim+".":".")+" Four guests remain. Question them — their alibis will clash. When you are certain, accuse. (Case ID "+Date.now().toString(36)+")");
+    $("status").textContent="New case ready. Question the guests.";
+  }catch(e){$("status").textContent="Error: "+e.message;}
+}
+function render(){
+  $("suspects").innerHTML=state.suspects.map((s,i)=>`<button class="suspect ${i===state.active?"active":""}" onclick="pick(${i})">🧑 ${s.name}</button>`).join("");
+}
+function pick(i){state.active=i;render();}
+function addMsg(who,text){
+  const d=document.createElement("div");d.className="msg "+(who==="player"?"player":"suspect");
+  d.innerHTML=(who==="player"?"You":`<small>🧑 ${state.suspects[state.active].name}</small>`)+escapeHtml(text).replace(/\n/g,"<br>");
+  $("chat").appendChild(d);$("chat").scrollTop=1e6;
+}
+function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+async function speak(text,idx){
+  try{
+    const r=await fetch("https://gen.pollinations.ai/v1/audio/speech",{method:"POST",
+      headers:{"Content-Type":"application/json",Authorization:"Bearer "+key()},
+      body:JSON.stringify({model:"openai-audio",voice:VOICES[idx%VOICES.length],input:text})});
+    if(!r.ok)return;
+    const b=await r.blob();
+    const a=document.createElement("audio");a.src=URL.createObjectURL(b);a.autoplay=true;a.controls=true;
+    document.querySelectorAll(".msg")[document.querySelectorAll(".msg").length-1].appendChild(a);
+  }catch(e){}
+}
+async function ask(){
+  const q=$("q").value.trim()||await listen();
+  if(!q)return;
+  $("q").value="";addMsg("player",q);
+  const i=state.active,s=state.suspects[i];
+  const truth=[`Suspect file: ${s.name}. Persona: ${s.persona}. Their alibi: ${s.alibi}. What they secretly know: ${s.guiltyKnowledge}.`];
+  if(i===state.culprit)truth.push("You ARE the culprit: lie plausibly, never confess, deflect suspicion.");
+  truth.push("Stay in character. Answer the detective briefly (2-4 sentences). Do not reveal other suspects' private info.");
+  $("status").textContent=s.name+" is thinking…";
+  try{
+    const hist=(state.history[i]||[]).slice(-8);
+    const a=await call([...hist,{role:"system",content:truth.join(" ")},{role:"user",content:q}]);
+    (state.history[i]??=[]).push({role:"user",content:q},{role:"assistant",content:a});
+    addMsg("suspect",a);speak(a,i);
+    // notebook: extract claims
+    call([{role:"system",content:'Extract factual claims this suspect just made (alibi details, times, sightings). JSON: {"claims":[string]}. Empty array if none. Only concrete facts.'},{role:"assistant",content:a},{role:"user",content:"List claims."}],true)
+      .then(t=>{JSON.parse(t).claims.forEach(c=>addClaim(s.name,c))}).catch(()=>{});
+    $("status").textContent="";
+  }catch(e){$("status").textContent="Error: "+e.message;}
+}
+function addClaim(who,text){
+  const d=document.createElement("div");d.className="claim";
+  d.innerHTML=`<b>${escapeHtml(who)}:</b> ${escapeHtml(text)}`;
+  $("notebook").appendChild(d);
+}
+async function accuse(){
+  const s=state.suspects[state.active];
+  if(!confirm("Accuse "+s.name+"?"))return;
+  $("status").textContent="The room holds its breath…";
+  try{
+    const verdict=s===state.suspects[state.culprit];
+    const outro=await call([{role:"system",content:"You are a noir narrator. One paragraph, dramatic reveal. The detective accused "+(verdict?"correctly":"wrongly")+". The truth: "+state.secret+". Accused: "+s.name+". Keep it under 90 words."},{role:"user",content:"Write the reveal."}]);
+    addMsg("suspect",outro);
+    $("v-title").textContent=verdict?"✅ Case closed — correct!":"❌ Wrong accusation";
+    $("v-text").textContent=verdict?s.name+" was the culprit. "+state.secret:"Innocent! The real culprit walks free… ("+state.suspects[state.culprit].name+" did it. "+state.secret+")";
+    $("verdict").classList.remove("hidden");
+    speak(outro,state.active);
+    state.solved=true;
+  }catch(e){$("status").textContent="Error: "+e.message;}
+}
+// Speech recognition
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null;
+$("mic").onclick=async()=>{
+  if(!SR){const t=prompt("Speech recognition not supported — type your question instead.");if(t){$("q").value=t;ask();}return;}
+  if(rec){rec.stop();return;}
+  rec=new SR();rec.lang="en-US";rec.interimResults=false;
+  $("mic").classList.add("on");$("mic").textContent="🔴 Listening…";
+  rec.onresult=e=>{$("q").value=e.results[0][0].transcript;ask();};
+  rec.onend=()=>{rec=null;$("mic").classList.remove("on");$("mic").textContent="🎤 Speak";};
+  rec.onerror=e=>{$("status").textContent="Mic: "+e.error;};
+  rec.start();
+};
+$("ask").onclick=ask;$("q").onkeydown=e=>{if(e.key==="Enter")ask();};
+$("accuse").onclick=accuse;$("newcase").onclick=newCase;
+</script>
+</body>
+</html>
